@@ -5,7 +5,7 @@ HuggingFace 模型下载工具，支持国内镜像加速、HTTP 代理、多线
 ## 功能特性
 
 - **国内镜像加速**：`--mirror` 启用 hf-mirror.com 镜像，国内下载速度显著提升
-- **自定义镜像源**：`--mirror-url` 支持指定任意镜像地址
+- **自定义镜像源**：`--mirror https://your-mirror.com` 指定自定义镜像地址
 - **HTTP 代理**：支持 `--proxy` 参数或环境变量设置代理
 - **多线程分片**：大文件自动启用多线程分片下载（默认 4 线程）
 - **断点续传**：下载中断后重新运行相同命令即可续传
@@ -53,11 +53,11 @@ pip install -e ".[dev]"
 # 下载整个模型仓库（默认直连官方源）
 hf-dl download gpt2
 
-# 使用国内镜像加速
+# 使用国内镜像加速（默认 hf-mirror.com）
 hf-dl download gpt2 --mirror
 
 # 使用自定义镜像源
-hf-dl download gpt2 --mirror --mirror-url https://my-mirror.com
+hf-dl download gpt2 --mirror https://my-mirror.com
 
 # 下载到指定目录
 hf-dl download gpt2 --local-dir /data/models/gpt2
@@ -90,8 +90,7 @@ hf-dl download <repo_id> [选项]
   --local-dir PATH      本地保存路径（默认: ./<repo_name>）
   --include PATTERNS    仅下载指定文件（逗号分隔，支持 glob 模式）
   --exclude PATTERNS    排除指定文件（逗号分隔，支持 glob 模式）
-  --mirror              使用国内镜像源（默认: hf-mirror.com）
-  --mirror-url URL      自定义镜像源地址（需配合 --mirror 使用）
+  --mirror [URL]       使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址
   --proxy URL           HTTP 代理地址，如 http://127.0.0.1:7890
   --threads N           多线程数（默认: 4，设为 0 禁用分片下载）
   --chunk-threshold SIZE 分片下载阈值（默认: 100M，超过此大小启用分片）
@@ -160,7 +159,7 @@ hf_dl/
 ```
     镜像源 ─── huggingface.co（默认）
             ├── hf-mirror.com（--mirror）
-            └── 自定义地址（--mirror --mirror-url URL）
+            └── 自定义地址（--mirror https://your-mirror.com）
 
     代理 ──── --proxy 参数 > HTTPS_PROXY > HTTP_PROXY
 

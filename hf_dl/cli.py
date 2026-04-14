@@ -30,8 +30,8 @@ def parse_args(argv=None):
     dl_parser.add_argument("--local-dir", help="本地保存路径（默认: ./<repo_name>）")
     dl_parser.add_argument("--include", help="仅下载指定文件（逗号分隔，支持 glob）")
     dl_parser.add_argument("--exclude", help="排除指定文件（逗号分隔，支持 glob）")
-    dl_parser.add_argument("--mirror", action="store_true", help="使用 hf-mirror.com 国内镜像源")
-    dl_parser.add_argument("--mirror-url", help="自定义镜像源地址（默认: https://hf-mirror.com）")
+    dl_parser.add_argument("--mirror", nargs="?", const="https://hf-mirror.com", default=None,
+                           help="使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址")
     dl_parser.add_argument("--proxy", help="HTTP 代理地址，如 http://127.0.0.1:7890")
     dl_parser.add_argument("--threads", type=int, default=4, help="多线程数（默认4，0=不分片）")
     dl_parser.add_argument("--chunk-threshold", dest="chunk_threshold", default="100M", help="分片下载阈值（默认100M）")
@@ -57,8 +57,7 @@ def main(argv=None):
             local_dir=args.local_dir,
             include=args.include,
             exclude=args.exclude,
-            use_mirror=args.mirror,
-            mirror_url=args.mirror_url,
+            mirror=args.mirror,
             proxy=args.proxy,
             threads=args.threads,
             chunk_threshold=args.chunk_threshold,

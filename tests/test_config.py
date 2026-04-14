@@ -7,7 +7,7 @@ def test_default_config():
     cfg = DownloadConfig(repo_id="gpt2")
     assert cfg.repo_id == "gpt2"
     assert cfg.endpoint == "https://huggingface.co"
-    assert cfg.use_mirror is False
+    assert cfg.mirror is None
     assert cfg.proxy is None
     assert cfg.threads == 4
     assert cfg.chunk_threshold == 100 * 1024 * 1024
@@ -15,18 +15,18 @@ def test_default_config():
     assert cfg.local_dir == "gpt2"
 
 
-def test_mirror_enabled():
-    cfg = DownloadConfig(repo_id="gpt2", use_mirror=True)
+def test_mirror_default():
+    cfg = DownloadConfig(repo_id="gpt2", mirror="https://hf-mirror.com")
     assert cfg.endpoint == "https://hf-mirror.com"
 
 
-def test_mirror_with_custom_url():
-    cfg = DownloadConfig(repo_id="gpt2", use_mirror=True, mirror_url="https://my-mirror.com")
+def test_mirror_custom_url():
+    cfg = DownloadConfig(repo_id="gpt2", mirror="https://my-mirror.com")
     assert cfg.endpoint == "https://my-mirror.com"
 
 
 def test_no_mirror():
-    cfg = DownloadConfig(repo_id="gpt2", use_mirror=False)
+    cfg = DownloadConfig(repo_id="gpt2")
     assert cfg.endpoint == "https://huggingface.co"
 
 

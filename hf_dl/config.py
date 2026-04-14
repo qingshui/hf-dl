@@ -6,7 +6,6 @@ from typing import Optional
 
 from hf_dl.utils import parse_size
 
-DEFAULT_MIRROR_URL = "https://hf-mirror.com"
 OFFICIAL_ENDPOINT = "https://huggingface.co"
 
 
@@ -18,8 +17,7 @@ class DownloadConfig:
     local_dir: Optional[str] = None
     include: Optional[str] = None
     exclude: Optional[str] = None
-    use_mirror: bool = False
-    mirror_url: Optional[str] = None
+    mirror: Optional[str] = None  # None=官方源, "https://..."=镜像地址
     proxy: Optional[str] = None
     threads: int = 4
     chunk_threshold: str = "100M"
@@ -31,11 +29,8 @@ class DownloadConfig:
     _chunk_threshold_bytes: int = field(init=False, repr=False)
 
     def __post_init__(self):
-        # endpoint: 默认官方源，--mirror 时使用镜像
-        if self.use_mirror:
-            self.endpoint = self.mirror_url or DEFAULT_MIRROR_URL
-        else:
-            self.endpoint = OFFICIAL_ENDPOINT
+        # endpoint: mirror 为 None 时用官方源，否则用镜像地址
+        self.endpoint = self.mirror if self.mirror else OFFICIAL_ENDPOINT
 
         # chunk_threshold 解析
         self._chunk_threshold_bytes = parse_size(self.chunk_threshold)
