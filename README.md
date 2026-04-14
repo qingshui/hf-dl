@@ -7,6 +7,7 @@ HuggingFace 模型下载工具，支持国内镜像加速、HTTP 代理、断点
 - **国内镜像加速**：`--mirror` 启用 hf-mirror.com 镜像
 - **自定义镜像源**：`--mirror https://your-mirror.com` 指定自定义镜像地址
 - **自动回退**：镜像下载失败自动尝试官方源
+- **并发下载**：`--threads N` 同时下载 N 个文件（默认 4）
 - **HTTP 代理**：支持 `--proxy` 参数或环境变量设置代理
 - **断点续传**：下载中断后重新运行相同命令即可续传
 - **文件过滤**：支持 `--include` / `--exclude` 按 glob 模式过滤文件
@@ -92,6 +93,7 @@ hf-dl download <repo_id> [选项]
   --exclude PATTERNS    排除指定文件（逗号分隔，支持 glob 模式）
   --mirror [URL]        使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址
   --proxy URL           HTTP 代理地址，如 http://127.0.0.1:7890
+  --threads N           并发下载文件数（默认: 4）
   --token TOKEN         HuggingFace 认证 token
   --no-resume           禁用断点续传
   --version             显示版本号
@@ -191,8 +193,9 @@ python -m pytest tests/test_downloader.py -v
 ### 下载速度慢？
 
 1. 使用国内镜像加速：`--mirror`
-2. 叠加代理：`--proxy http://127.0.0.1:7890`
-3. 排除不需要的大文件：`--exclude "*.safetensors"`
+2. 增加并发数：`--threads 8`
+3. 叠加代理：`--proxy http://127.0.0.1:7890`
+4. 排除不需要的大文件：`--exclude "*.safetensors"`
 
 ### 下载中断了怎么办？
 

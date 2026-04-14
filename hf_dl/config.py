@@ -17,6 +17,7 @@ class DownloadConfig:
     exclude: Optional[str] = None
     mirror: Optional[str] = None  # None=官方源, "https://..."=镜像地址
     proxy: Optional[str] = None
+    threads: int = 4  # 并发下载文件数
     resume: bool = True
     token: Optional[str] = None
 

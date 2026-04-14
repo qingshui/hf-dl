@@ -1,7 +1,11 @@
-"""下载引擎：单线程流式下载 + 断点续传 + 自动回退"""
+"""下载引擎：并发文件下载 + 断点续传 + 自动回退"""
 
 import logging
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional, Tuple
 
 import requests
 from rich.progress import (
@@ -66,7 +70,6 @@ def download_file(
         except Exception as e:
             logger.warning(f"下载 {filename} 第 {attempt} 次失败: {e}")
             if attempt < _MAX_RETRIES:
-                import time
                 time.sleep(_RETRY_DELAY)
             else:
                 raise
@@ -103,7 +106,6 @@ def _do_download(
     # 计算总大小
     total_size = int(resp.headers.get("content-length", 0))
     if downloaded > 0 and resp.status_code == 206:
-        # 服务器支持 Range，content-length 是剩余部分
         total_size += downloaded
     elif total_size == 0:
         total_size = downloaded
@@ -127,15 +129,57 @@ def _do_download(
                 progress.update(task, advance=size)
                 progress.update(parent_task_id, advance=size)
     except Exception:
-        # 下载中断，不删除文件，下次可续传
         progress.remove_task(task)
         raise
 
     progress.remove_task(task)
 
 
+def _download_one_file(
+    fname: str,
+    fsize: int,
+    config: DownloadConfig,
+    progress: Progress,
+    parent_task_id: int,
+    fallback_endpoints: List[str],
+) -> bool:
+    """下载单个文件，镜像失败自动回退。返回是否成功。"""
+    console = _get_console()
+    local_path = os.path.join(config.local_dir, fname)
+
+    # 已存在的文件跳过
+    if os.path.exists(local_path) and os.path.getsize(local_path) == fsize:
+        progress.update(parent_task_id, advance=fsize)
+        return True
+
+    # 依次尝试：当前源 -> 备选源
+    endpoints_to_try = [config.endpoint] + fallback_endpoints
+
+    for endpoint in endpoints_to_try:
+        url = f"{endpoint}/{config.repo_id}/resolve/main/{fname}"
+        try:
+            download_file(
+                url=url,
+                filepath=local_path,
+                config=config,
+                progress=progress,
+                parent_task_id=parent_task_id,
+            )
+            return True
+        except Exception as e:
+            endpoint_label = "镜像源" if endpoint != OFFICIAL_ENDPOINT else "官方源"
+            logger.warning(f"{endpoint_label}下载 {fname} 失败: {e}")
+            _cleanup_failed_file(local_path)
+            if fallback_endpoints:
+                console.print(f"[yellow]{endpoint_label}下载 {fname} 失败，尝试回退官方源...[/yellow]")
+
+    logger.error(f"下载 {fname} 失败: 所有源均不可用")
+    console.print(f"[bold red]下载 {fname} 失败: 所有源均不可用[/bold red]")
+    return False
+
+
 def download_repo(config: DownloadConfig):
-    """下载整个仓库，镜像失败自动回退官方源。"""
+    """下载整个仓库，多文件并发，镜像失败自动回退官方源。"""
     from huggingface_hub import HfApi
 
     from hf_dl.utils import match_glob_pattern
@@ -192,45 +236,39 @@ def download_repo(config: DownloadConfig):
         )
 
         completed = 0
-        for fname, fsize in target_files:
-            local_path = os.path.join(config.local_dir, fname)
+        completed_lock = threading.Lock()
 
-            # 已存在的文件跳过
-            if os.path.exists(local_path) and os.path.getsize(local_path) == fsize:
-                progress.update(overall_task, advance=fsize)
+        def _on_file_done(future):
+            """单个文件下载完成后的回调，更新计数。"""
+            nonlocal completed
+            with completed_lock:
                 completed += 1
                 progress.update(overall_task, status=f"{completed}/{len(target_files)} 文件")
-                continue
 
-            # 依次尝试：当前源 -> 备选源
-            endpoints_to_try = [config.endpoint] + fallback_endpoints
-            downloaded_ok = False
+        # 并发下载：线程池处理多个文件
+        num_workers = min(config.threads, len(target_files))
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {}
+            for fname, fsize in target_files:
+                future = executor.submit(
+                    _download_one_file,
+                    fname=fname,
+                    fsize=fsize,
+                    config=config,
+                    progress=progress,
+                    parent_task_id=overall_task,
+                    fallback_endpoints=fallback_endpoints,
+                )
+                future.add_done_callback(_on_file_done)
+                futures[future] = fname
 
-            for endpoint in endpoints_to_try:
-                url = f"{endpoint}/{config.repo_id}/resolve/main/{fname}"
+            # 等待所有任务完成
+            for future in as_completed(futures):
+                fname = futures[future]
                 try:
-                    download_file(
-                        url=url,
-                        filepath=local_path,
-                        config=config,
-                        progress=progress,
-                        parent_task_id=overall_task,
-                    )
-                    downloaded_ok = True
-                    break
+                    future.result()
                 except Exception as e:
-                    endpoint_label = "镜像源" if endpoint != OFFICIAL_ENDPOINT else "官方源"
-                    logger.warning(f"{endpoint_label}下载 {fname} 失败: {e}")
-                    _cleanup_failed_file(local_path)
-                    if fallback_endpoints:
-                        console.print(f"[yellow]{endpoint_label}下载 {fname} 失败，尝试回退官方源...[/yellow]")
-
-            if not downloaded_ok:
-                logger.error(f"下载 {fname} 失败: 所有源均不可用")
-                console.print(f"[bold red]下载 {fname} 失败: 所有源均不可用[/bold red]")
-
-            completed += 1
-            progress.update(overall_task, status=f"{completed}/{len(target_files)} 文件")
+                    logger.error(f"下载 {fname} 异常: {e}")
 
 
 def _get_console():

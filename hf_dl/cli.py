@@ -33,6 +33,7 @@ def parse_args(argv=None):
     dl_parser.add_argument("--mirror", nargs="?", const="https://hf-mirror.com", default=None,
                            help="使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址")
     dl_parser.add_argument("--proxy", help="HTTP 代理地址，如 http://127.0.0.1:7890")
+    dl_parser.add_argument("--threads", type=int, default=4, help="并发下载文件数（默认4）")
     dl_parser.add_argument("--token", help="HuggingFace token")
     dl_parser.add_argument("--no-resume", dest="resume", action="store_false", help="禁用断点续传")
 
@@ -57,6 +58,7 @@ def main(argv=None):
             exclude=args.exclude,
             mirror=args.mirror,
             proxy=args.proxy,
+            threads=args.threads,
             resume=args.resume,
             token=args.token,
         )
@@ -65,6 +67,7 @@ def main(argv=None):
         console.print(f"[bold green]下载源:[/bold green] {config.endpoint}")
         if config.proxy:
             console.print(f"[bold green]代理:[/bold green] {config.proxy}")
+        console.print(f"[bold green]并发数:[/bold green] {config.threads}")
         console.print(f"[bold green]本地路径:[/bold green] {config.local_dir}")
         console.print()
 
