@@ -4,12 +4,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-from hf_dl.utils import parse_size
-
 OFFICIAL_ENDPOINT = "https://huggingface.co"
-
-# 镜像下载失败时自动回退的备选 endpoint 列表
-FALLBACK_ENDPOINTS = [OFFICIAL_ENDPOINT]
 
 
 @dataclass
@@ -22,22 +17,15 @@ class DownloadConfig:
     exclude: Optional[str] = None
     mirror: Optional[str] = None  # None=官方源, "https://..."=镜像地址
     proxy: Optional[str] = None
-    threads: int = 4
-    chunk_threshold: str = "100M"
     resume: bool = True
     token: Optional[str] = None
 
     # 计算属性，初始化后设置
     endpoint: str = field(init=False, repr=False)
-    _chunk_threshold_bytes: int = field(init=False, repr=False)
 
     def __post_init__(self):
         # endpoint: mirror 为 None 时用官方源，否则用镜像地址
         self.endpoint = self.mirror if self.mirror else OFFICIAL_ENDPOINT
-
-        # chunk_threshold 解析
-        self._chunk_threshold_bytes = parse_size(self.chunk_threshold)
-        self.chunk_threshold = self._chunk_threshold_bytes
 
         # local_dir 默认值
         if self.local_dir is None:

@@ -9,8 +9,6 @@ def test_default_config():
     assert cfg.endpoint == "https://huggingface.co"
     assert cfg.mirror is None
     assert cfg.proxy is None
-    assert cfg.threads == 4
-    assert cfg.chunk_threshold == 100 * 1024 * 1024
     assert cfg.resume is True
     assert cfg.local_dir == "gpt2"
 
@@ -64,7 +62,6 @@ def test_custom_local_dir():
     assert cfg.local_dir == "/tmp/models/gpt2"
 
 
-def test_custom_threads_and_threshold():
-    cfg = DownloadConfig(repo_id="gpt2", threads=8, chunk_threshold="50M")
-    assert cfg.threads == 8
-    assert cfg.chunk_threshold == 50 * 1024 * 1024
+def test_repo_id_with_org():
+    cfg = DownloadConfig(repo_id="org/model-name")
+    assert cfg.local_dir == "model-name"

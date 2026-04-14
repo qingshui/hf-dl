@@ -1,13 +1,13 @@
 # hf-dl: HuggingFace 模型下载工具
 
-HuggingFace 模型下载工具，支持国内镜像加速、HTTP 代理、多线程分片下载和断点续传。
+HuggingFace 模型下载工具，支持国内镜像加速、HTTP 代理、断点续传和自动回退。
 
 ## 功能特性
 
-- **国内镜像加速**：`--mirror` 启用 hf-mirror.com 镜像，国内下载速度显著提升
+- **国内镜像加速**：`--mirror` 启用 hf-mirror.com 镜像
 - **自定义镜像源**：`--mirror https://your-mirror.com` 指定自定义镜像地址
+- **自动回退**：镜像下载失败自动尝试官方源
 - **HTTP 代理**：支持 `--proxy` 参数或环境变量设置代理
-- **多线程分片**：大文件自动启用多线程分片下载（默认 4 线程）
 - **断点续传**：下载中断后重新运行相同命令即可续传
 - **文件过滤**：支持 `--include` / `--exclude` 按 glob 模式过滤文件
 - **进度显示**：实时显示当前下载文件、速度和剩余时间
@@ -22,7 +22,7 @@ HuggingFace 模型下载工具，支持国内镜像加速、HTTP 代理、多线
 ### 从源码安装
 
 ```bash
-git clone <repo-url> hf-dl
+git clone https://github.com/qingshui/hf-dl.git
 cd hf-dl
 pip install -e .
 ```
@@ -31,8 +31,8 @@ pip install -e .
 
 | 依赖 | 最低版本 | 用途 |
 |------|---------|------|
-| huggingface_hub | >=0.20.0 | HuggingFace API 调用、小文件下载 |
-| requests | >=2.28.0 | 多线程分片下载的 HTTP 请求 |
+| huggingface_hub | >=0.20.0 | HuggingFace API 调用 |
+| requests | >=2.28.0 | HTTP 下载 |
 | rich | >=13.0.0 | 终端进度条和彩色输出 |
 
 开发依赖：
@@ -71,11 +71,11 @@ hf-dl download gpt2 --exclude "*.safetensors"
 # 使用 HTTP 代理
 hf-dl download gpt2 --proxy http://127.0.0.1:7890
 
-# 8 线程下载大模型
-hf-dl download meta-llama/Llama-2-7b-hf --mirror --threads 8
-
 # 使用认证 token（私有模型）
 hf-dl download meta-llama/Llama-2-7b-hf --token hf_xxxxx
+
+# 镜像 + 代理组合
+hf-dl download meta-llama/Llama-2-7b-hf --mirror --proxy http://127.0.0.1:7890
 ```
 
 ## 命令参考
@@ -90,10 +90,8 @@ hf-dl download <repo_id> [选项]
   --local-dir PATH      本地保存路径（默认: ./<repo_name>）
   --include PATTERNS    仅下载指定文件（逗号分隔，支持 glob 模式）
   --exclude PATTERNS    排除指定文件（逗号分隔，支持 glob 模式）
-  --mirror [URL]       使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址
+  --mirror [URL]        使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址
   --proxy URL           HTTP 代理地址，如 http://127.0.0.1:7890
-  --threads N           多线程数（默认: 4，设为 0 禁用分片下载）
-  --chunk-threshold SIZE 分片下载阈值（默认: 100M，超过此大小启用分片）
   --token TOKEN         HuggingFace 认证 token
   --no-resume           禁用断点续传
   --version             显示版本号
@@ -116,7 +114,7 @@ hf_dl/
  ├── __init__.py    # 包初始化，版本号
  ├── cli.py         # CLI 入口，参数解析与主流程调度
  ├── config.py      # 镜像源、代理、endpoint 配置管理
- ├── downloader.py  # 下载引擎（单文件 + 多线程分片 + 断点续传）
+ ├── downloader.py  # 下载引擎（流式下载 + 断点续传 + 自动回退）
  └── utils.py       # 工具函数（文件大小解析、glob 匹配）
 ```
 
@@ -129,7 +127,7 @@ hf_dl/
     cli.py: 解析参数 → 构建 DownloadConfig
          │
          ▼
-  config.py: 确定镜像源 endpoint、代理、token
+  config.py: 确定 endpoint（官方源/镜像源）、代理、token
          │
          ▼
   downloader.py: download_repo()
@@ -138,53 +136,44 @@ hf_dl/
          ├─ --include/--exclude 过滤
          │
          ▼
-    遍历文件列表，按大小分流：
+    遍历文件列表，逐个下载：
          │
-         ├── 文件 ≤ 阈值 ──→ download_file_single()
-         │                    └─ huggingface_hub.hf_hub_download()
-         │                       (自带断点续传 + endpoint 替换)
+         ├── 已存在且完整 → 跳过
          │
-         └── 文件 > 阈值 ──→ download_file_multithread()
-                              ├─ HEAD 获取文件大小
-                              ├─ split_ranges() 分片
-                              ├─ ThreadPoolExecutor 并行下载
-                              │   └─ download_chunk() × N
-                              │       └─ GET Range 请求 + 重试
-                              ├─ .progress 文件记录已完成分片
-                              └─ 全部完成 → 删除 .progress
+         └── 未下载/不完整 → download_file()
+              │
+              ├─ 检查本地已下载字节数（断点续传）
+              ├─ GET 请求 + Range 头续传
+              ├─ 流式写入 + 进度条更新
+              ├─ 失败重试（5 次，间隔 3s）
+              └─ 镜像失败 → 自动回退官方源
 ```
 
-### 镜像与代理策略
+### 下载源策略
 
 ```
-    镜像源 ─── huggingface.co（默认）
+    下载源 ─── huggingface.co（默认）
             ├── hf-mirror.com（--mirror）
             └── 自定义地址（--mirror https://your-mirror.com）
 
-    代理 ──── --proxy 参数 > HTTPS_PROXY > HTTP_PROXY
-
-    组合关系：
-    ┌──────────┬──────────┬────────────────────────────┐
-    │ 镜像源   │ 代理     │ 效果                        │
-    ├──────────┼──────────┼────────────────────────────┤
-    │ 官方源   │ 无       │ 默认模式，直连官方源        │
-    │ 官方源   │ HTTP代理 │ 通过代理访问官方源          │
-    │ hf-mirror│ 无       │ 国内直连镜像，无需代理      │
-    │ hf-mirror│ HTTP代理 │ 镜像+代理双重加速           │
-    └──────────┴──────────┴────────────────────────────┘
+    自动回退：
+    ┌────────────────────────┬────────────────────────────┐
+    │ 场景                    │ 行为                        │
+    ├────────────────────────┼────────────────────────────┤
+    │ 官方源下载成功          │ 正常完成                    │
+    │ 镜像源下载成功          │ 正常完成                    │
+    │ 镜像源失败              │ 自动回退官方源重试          │
+    │ 镜像+官方均失败         │ 报错，继续下一个文件        │
+    └────────────────────────┴────────────────────────────┘
 ```
 
 ### 断点续传机制
 
-**小文件**（huggingface_hub 内置）：
-- 下载中标记 `.incomplete` 文件
-- 重试时通过 `Range` 请求头续传
-
-**大文件**（自研分片）：
-- 每个 `.progress` 文件记录已完成分片索引列表
-- 续传时跳过已完成分片，仅下载 pending 分片
-- 全部完成后自动删除 `.progress` 文件
-- Ctrl+C 中断后重新运行相同命令即可续传
+- 每个文件下载时检查本地已有部分的大小
+- 通过 `Range: bytes=<已下载大小>-` 请求剩余部分
+- 服务器返回 206 (Partial Content) 时追加写入
+- 中断后重新运行相同命令即可续传
+- 每个文件独立重试 5 次，间隔 3 秒
 
 ## 运行测试
 
@@ -193,7 +182,6 @@ hf_dl/
 python -m pytest tests/ -v
 
 # 运行单个模块测试
-python -m pytest tests/test_utils.py -v
 python -m pytest tests/test_config.py -v
 python -m pytest tests/test_downloader.py -v
 ```
@@ -202,14 +190,17 @@ python -m pytest tests/test_downloader.py -v
 
 ### 下载速度慢？
 
-1. 使用国内镜像加速：`--mirror`（输出中应显示 `镜像源: https://hf-mirror.com`）
-2. 增加线程数：`--threads 8`
-3. 降低分片阈值让更多文件走多线程：`--chunk-threshold 50M`
-4. 如果镜像源也不快，尝试叠加代理：`--proxy http://127.0.0.1:7890`
+1. 使用国内镜像加速：`--mirror`
+2. 叠加代理：`--proxy http://127.0.0.1:7890`
+3. 排除不需要的大文件：`--exclude "*.safetensors"`
 
 ### 下载中断了怎么办？
 
-重新运行相同命令即可自动续传。大文件会通过 `.progress` 文件跳过已完成分片，小文件由 `huggingface_hub` 内置续传机制处理。
+重新运行相同命令即可自动续传。已下载的部分不会重复下载。
+
+### SSL 报错怎么办？
+
+hf-mirror.com 对大文件可能重定向到 CDN，CDN 连接不稳定时会自动重试 5 次。如果仍失败，会自动回退到官方源下载。
 
 ### 如何下载私有模型？
 
@@ -222,12 +213,6 @@ hf-dl download org/private-model --token hf_xxxxx
 ```bash
 export HF_TOKEN=hf_xxxxx
 hf-dl download org/private-model
-```
-
-### 如何使用国内镜像？
-
-```bash
-hf-dl download gpt2 --mirror
 ```
 
 ## 致谢

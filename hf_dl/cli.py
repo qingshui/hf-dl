@@ -18,7 +18,7 @@ def parse_args(argv=None):
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(
         prog="hf-dl",
-        description="HuggingFace 国内下载加速器 - 通过 hf-mirror.com 镜像加速下载",
+        description="HuggingFace 模型下载工具 - 支持镜像加速和断点续传",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -33,8 +33,6 @@ def parse_args(argv=None):
     dl_parser.add_argument("--mirror", nargs="?", const="https://hf-mirror.com", default=None,
                            help="使用镜像源加速，不加值默认 hf-mirror.com，可指定自定义地址")
     dl_parser.add_argument("--proxy", help="HTTP 代理地址，如 http://127.0.0.1:7890")
-    dl_parser.add_argument("--threads", type=int, default=4, help="多线程数（默认4，0=不分片）")
-    dl_parser.add_argument("--chunk-threshold", dest="chunk_threshold", default="100M", help="分片下载阈值（默认100M）")
     dl_parser.add_argument("--token", help="HuggingFace token")
     dl_parser.add_argument("--no-resume", dest="resume", action="store_false", help="禁用断点续传")
 
@@ -59,23 +57,19 @@ def main(argv=None):
             exclude=args.exclude,
             mirror=args.mirror,
             proxy=args.proxy,
-            threads=args.threads,
-            chunk_threshold=args.chunk_threshold,
             resume=args.resume,
             token=args.token,
         )
 
         console.print(f"[bold green]仓库:[/bold green] {config.repo_id}")
-        console.print(f"[bold green]镜像源:[/bold green] {config.endpoint}")
+        console.print(f"[bold green]下载源:[/bold green] {config.endpoint}")
         if config.proxy:
             console.print(f"[bold green]代理:[/bold green] {config.proxy}")
         console.print(f"[bold green]本地路径:[/bold green] {config.local_dir}")
-        console.print(f"[bold green]线程数:[/bold green] {config.threads}")
-        console.print(f"[bold green]分片阈值:[/bold green] {config.chunk_threshold} bytes")
         console.print()
 
         def signal_handler(sig, frame):
-            console.print("\n[yellow]下载中断，进度已保存。重新运行相同命令可续传。[/yellow]")
+            console.print("\n[yellow]下载中断，已下载部分已保存。重新运行相同命令可续传。[/yellow]")
             sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)
