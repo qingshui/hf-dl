@@ -8,11 +8,29 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
 
 import requests
-from rich.progress import BarColumn, DownloadColumn, Progress, TimeRemainingColumn, TransferSpeedColumn
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 
 from hf_dl.config import DownloadConfig
 
 logger = logging.getLogger(__name__)
+
+# 进度条列定义
+_FILE_PROGRESS_COLUMNS = (
+    SpinnerColumn(),
+    TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
+    BarColumn(bar_width=40),
+    DownloadColumn(),
+    TransferSpeedColumn(),
+    TimeRemainingColumn(),
+)
 
 
 def get_file_size(url: str, headers: dict, proxies: Optional[str]) -> int:
@@ -41,6 +59,14 @@ def _build_proxies(proxy: Optional[str]) -> Optional[dict]:
     if not proxy:
         return None
     return {"http": proxy, "https": proxy}
+
+
+def _build_auth_headers(config: DownloadConfig) -> dict:
+    """构建认证请求头。"""
+    headers = {}
+    if config.token:
+        headers["Authorization"] = f"Bearer {config.token}"
+    return headers
 
 
 def download_chunk(
@@ -98,6 +124,8 @@ def download_file_multithread(
     filepath: str,
     file_size: int,
     config: DownloadConfig,
+    progress: Optional[Progress] = None,
+    parent_task_id: Optional[int] = None,
 ):
     """多线程分片下载大文件，支持断点续传。"""
     progress_file = filepath + ".progress"
@@ -114,24 +142,30 @@ def download_file_multithread(
             f.seek(file_size - 1)
             f.write(b"\0")
 
-    headers = {}
-    if config.token:
-        headers["Authorization"] = f"Bearer {config.token}"
+    headers = _build_auth_headers(config)
+    filename = os.path.basename(filepath)
 
-    with Progress(
-        "[progress.description]{task.description}",
-        BarColumn(),
-        DownloadColumn(),
-        TransferSpeedColumn(),
-        TimeRemainingColumn(),
-    ) as progress:
-        task = progress.add_task(f"[cyan]{os.path.basename(filepath)}", total=file_size)
+    own_progress = progress is None
+    if own_progress:
+        progress = Progress(*_FILE_PROGRESS_COLUMNS)
+        progress.start()
 
+    task = progress.add_task(
+        "", total=file_size, filename=filename, status="",
+    )
+
+    # 如果有父任务，也同步更新
+    def _advance(amount):
+        progress.update(task, advance=amount)
+        if parent_task_id is not None:
+            progress.update(parent_task_id, advance=amount)
+
+    try:
         with ThreadPoolExecutor(max_workers=num_chunks) as executor:
             futures = {}
             for idx, (start, end) in enumerate(ranges):
                 if idx in completed_chunks:
-                    progress.update(task, advance=end - start + 1)
+                    _advance(end - start + 1)
                     continue
                 future = executor.submit(
                     download_chunk,
@@ -151,47 +185,100 @@ def download_file_multithread(
                 success = future.result()
                 if success:
                     completed_chunks.add(idx)
-                    progress.update(task, advance=end - start + 1)
+                    _advance(end - start + 1)
                     _save_progress(progress_file, {"completed": list(completed_chunks)})
                 else:
                     raise RuntimeError(f"分片 {idx} 下载失败，已重试多次")
+    finally:
+        if own_progress:
+            progress.stop()
 
     if os.path.exists(progress_file):
         os.remove(progress_file)
 
 
 def download_file_single(
-    repo_id: str,
-    filename: str,
+    url: str,
+    filepath: str,
     config: DownloadConfig,
+    progress: Optional[Progress] = None,
+    parent_task_id: Optional[int] = None,
 ):
-    """使用 huggingface_hub 下载单个文件（小文件默认路径）。"""
-    from huggingface_hub import hf_hub_download
+    """使用 requests 流式下载单个文件，带进度条显示。"""
+    headers = _build_auth_headers(config)
+    filename = os.path.basename(filepath)
 
-    hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        local_dir=config.local_dir,
-        endpoint=config.endpoint,
-        token=config.token,
+    # 续传：如果本地文件已存在部分内容
+    downloaded = 0
+    if os.path.exists(filepath):
+        downloaded = os.path.getsize(filepath)
+        if downloaded > 0:
+            headers["Range"] = f"bytes={downloaded}-"
+
+    resp = requests.get(
+        url,
+        headers=headers,
+        proxies=_build_proxies(config.proxy),
+        stream=True,
+        timeout=300,
     )
+    resp.raise_for_status()
+
+    total_size = int(resp.headers.get("content-length", 0))
+    # 如果服务器支持 Range，total_size 是剩余部分
+    if downloaded > 0 and resp.status_code == 206:
+        total_size += downloaded
+    elif total_size == 0:
+        total_size = downloaded
+
+    own_progress = progress is None
+    if own_progress:
+        progress = Progress(*_FILE_PROGRESS_COLUMNS)
+        progress.start()
+
+    task = progress.add_task(
+        "", total=total_size if total_size > 0 else None,
+        filename=filename, status="",
+    )
+
+    # 如果有续传偏移，先更新进度条
+    if downloaded > 0:
+        progress.update(task, advance=downloaded)
+        if parent_task_id is not None:
+            progress.update(parent_task_id, advance=downloaded)
+
+    try:
+        mode = "ab" if downloaded > 0 and resp.status_code == 206 else "wb"
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+        with open(filepath, mode) as f:
+            for data in resp.iter_content(chunk_size=8192):
+                f.write(data)
+                size = len(data)
+                progress.update(task, advance=size)
+                if parent_task_id is not None:
+                    progress.update(parent_task_id, advance=size)
+    finally:
+        if own_progress:
+            progress.stop()
 
 
 def download_repo(config: DownloadConfig):
     """下载整个仓库，根据文件大小选择下载方式。"""
     from huggingface_hub import HfApi
 
+    from hf_dl.utils import match_glob_pattern
+
+    console = _get_console()
+    console.print(f"[bold]正在获取文件列表...[/bold]")
+
     api = HfApi(endpoint=config.endpoint, token=config.token)
     files = api.list_repo_tree(repo_id=config.repo_id)
-
-    from hf_dl.utils import match_glob_pattern
 
     include_patterns = config.include.split(",") if config.include else None
     exclude_patterns = config.exclude.split(",") if config.exclude else None
 
     target_files = []
     for f in files:
-        # RepoFile has 'size', RepoFolder does not - skip folders
         if not hasattr(f, "size"):
             continue
         fname = f.path
@@ -205,38 +292,94 @@ def download_repo(config: DownloadConfig):
         target_files.append((fname, fsize))
 
     if not target_files:
-        print("[yellow]没有匹配的文件[/yellow]")
+        console.print("[yellow]没有匹配的文件[/yellow]")
         return
 
-    print(f"[green]共 {len(target_files)} 个文件需要下载[/green]")
+    total_size = sum(s for _, s in target_files)
+    console.print(f"[bold green]共 {len(target_files)} 个文件，总大小 {_format_size(total_size)}[/bold green]")
+    console.print()
 
     base_url = f"{config.endpoint}/{config.repo_id}/resolve/main"
 
-    for fname, fsize in target_files:
-        local_path = os.path.join(config.local_dir, fname)
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    # 整体进度条：追踪所有文件的下载进度
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold]{task.description}"),
+        BarColumn(bar_width=40),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        TextColumn("{task.fields[status]}"),
+    ) as progress:
+        overall_task = progress.add_task(
+            "总体进度", total=total_size,
+            status=f"0/{len(target_files)} 文件",
+        )
 
-        if os.path.exists(local_path) and os.path.getsize(local_path) == fsize:
-            print(f"[dim]跳过已存在: {fname}[/dim]")
-            continue
+        completed = 0
+        for fname, fsize in target_files:
+            local_path = os.path.join(config.local_dir, fname)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
-        if config.threads > 0 and fsize > config.chunk_threshold:
+            # 已存在的文件跳过
+            if os.path.exists(local_path) and os.path.getsize(local_path) == fsize:
+                progress.update(overall_task, advance=fsize)
+                completed += 1
+                progress.update(overall_task, status=f"{completed}/{len(target_files)} 文件")
+                continue
+
             url = f"{base_url}/{fname}"
-            try:
-                remote_size = get_file_size(url, {}, config.proxy)
-                if remote_size <= 0:
-                    remote_size = fsize
-                download_file_multithread(
-                    url=url,
-                    filepath=local_path,
-                    file_size=remote_size,
-                    config=config,
-                )
-            except Exception as e:
-                logger.error(f"多线程下载 {fname} 失败: {e}, 回退到单文件下载")
-                download_file_single(config.repo_id, fname, config)
-        else:
-            try:
-                download_file_single(config.repo_id, fname, config)
-            except Exception as e:
-                logger.error(f"下载 {fname} 失败: {e}")
+
+            if config.threads > 0 and fsize > config.chunk_threshold:
+                # 大文件: 多线程分片下载
+                try:
+                    remote_size = get_file_size(url, {}, config.proxy)
+                    if remote_size <= 0:
+                        remote_size = fsize
+                    download_file_multithread(
+                        url=url,
+                        filepath=local_path,
+                        file_size=remote_size,
+                        config=config,
+                        progress=progress,
+                        parent_task_id=overall_task,
+                    )
+                except Exception as e:
+                    logger.error(f"多线程下载 {fname} 失败: {e}, 回退到单文件下载")
+                    download_file_single(
+                        url=url,
+                        filepath=local_path,
+                        config=config,
+                        progress=progress,
+                        parent_task_id=overall_task,
+                    )
+            else:
+                # 小文件: 流式下载
+                try:
+                    download_file_single(
+                        url=url,
+                        filepath=local_path,
+                        config=config,
+                        progress=progress,
+                        parent_task_id=overall_task,
+                    )
+                except Exception as e:
+                    logger.error(f"下载 {fname} 失败: {e}")
+
+            completed += 1
+            progress.update(overall_task, status=f"{completed}/{len(target_files)} 文件")
+
+
+def _get_console():
+    """获取 rich Console 实例。"""
+    from rich.console import Console
+    return Console()
+
+
+def _format_size(size: int) -> str:
+    """将字节数格式化为人类可读字符串。"""
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} PB"
