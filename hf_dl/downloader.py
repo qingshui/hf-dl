@@ -174,19 +174,15 @@ def download_file_single(
         local_dir=config.local_dir,
         endpoint=config.endpoint,
         token=config.token,
-        resume_download=config.resume,
     )
 
 
 def download_repo(config: DownloadConfig):
     """下载整个仓库，根据文件大小选择下载方式。"""
-    from huggingface_hub import list_repo_tree
+    from huggingface_hub import HfApi
 
-    files = list_repo_tree(
-        repo_id=config.repo_id,
-        endpoint=config.endpoint,
-        token=config.token,
-    )
+    api = HfApi(endpoint=config.endpoint, token=config.token)
+    files = api.list_repo_tree(repo_id=config.repo_id)
 
     from hf_dl.utils import match_glob_pattern
 
@@ -195,12 +191,11 @@ def download_repo(config: DownloadConfig):
 
     target_files = []
     for f in files:
-        if hasattr(f, "rfilename"):
-            fname = f.rfilename
-            fsize = f.size
-        else:
-            fname = f.path
-            fsize = getattr(f, "size", 0)
+        # RepoFile has 'size', RepoFolder does not - skip folders
+        if not hasattr(f, "size"):
+            continue
+        fname = f.path
+        fsize = f.size
 
         if include_patterns and not any(match_glob_pattern(fname, p.strip()) for p in include_patterns):
             continue
