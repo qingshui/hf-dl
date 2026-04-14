@@ -1,15 +1,16 @@
-# hf-dl: HuggingFace 国内下载加速器
+# hf-dl: HuggingFace 模型下载工具
 
-通过 [hf-mirror.com](https://hf-mirror.com) 国内公益镜像加速 HuggingFace 模型下载，支持 HTTP 代理、多线程分片下载和断点续传。
+HuggingFace 模型下载工具，支持国内镜像加速、HTTP 代理、多线程分片下载和断点续传。
 
 ## 功能特性
 
-- **镜像加速**：默认使用 hf-mirror.com 镜像，国内下载速度显著提升
+- **国内镜像加速**：`--mirror` 启用 hf-mirror.com 镜像，国内下载速度显著提升
+- **自定义镜像源**：`--mirror-url` 支持指定任意镜像地址
 - **HTTP 代理**：支持 `--proxy` 参数或环境变量设置代理
 - **多线程分片**：大文件自动启用多线程分片下载（默认 4 线程）
 - **断点续传**：下载中断后重新运行相同命令即可续传
 - **文件过滤**：支持 `--include` / `--exclude` 按 glob 模式过滤文件
-- **进度显示**：实时显示下载进度条、速度和剩余时间
+- **进度显示**：实时显示当前下载文件、速度和剩余时间
 
 ## 安装
 
@@ -49,8 +50,14 @@ pip install -e ".[dev]"
 ## 快速开始
 
 ```bash
-# 下载整个模型仓库
+# 下载整个模型仓库（默认直连官方源）
 hf-dl download gpt2
+
+# 使用国内镜像加速
+hf-dl download gpt2 --mirror
+
+# 使用自定义镜像源
+hf-dl download gpt2 --mirror --mirror-url https://my-mirror.com
 
 # 下载到指定目录
 hf-dl download gpt2 --local-dir /data/models/gpt2
@@ -65,10 +72,7 @@ hf-dl download gpt2 --exclude "*.safetensors"
 hf-dl download gpt2 --proxy http://127.0.0.1:7890
 
 # 8 线程下载大模型
-hf-dl download meta-llama/Llama-2-7b-hf --threads 8
-
-# 切换到官方源（不走镜像）
-hf-dl download gpt2 --no-mirror
+hf-dl download meta-llama/Llama-2-7b-hf --mirror --threads 8
 
 # 使用认证 token（私有模型）
 hf-dl download meta-llama/Llama-2-7b-hf --token hf_xxxxx
@@ -86,7 +90,8 @@ hf-dl download <repo_id> [选项]
   --local-dir PATH      本地保存路径（默认: ./<repo_name>）
   --include PATTERNS    仅下载指定文件（逗号分隔，支持 glob 模式）
   --exclude PATTERNS    排除指定文件（逗号分隔，支持 glob 模式）
-  --no-mirror           不使用镜像，直连 HuggingFace 官方源
+  --mirror              使用国内镜像源（默认: hf-mirror.com）
+  --mirror-url URL      自定义镜像源地址（需配合 --mirror 使用）
   --proxy URL           HTTP 代理地址，如 http://127.0.0.1:7890
   --threads N           多线程数（默认: 4，设为 0 禁用分片下载）
   --chunk-threshold SIZE 分片下载阈值（默认: 100M，超过此大小启用分片）
@@ -153,9 +158,9 @@ hf_dl/
 ### 镜像与代理策略
 
 ```
-                    hf-mirror.com（默认）
-    镜像源 ─────────────────────────────────
-                    huggingface.co（--no-mirror）
+    镜像源 ─── huggingface.co（默认）
+            ├── hf-mirror.com（--mirror）
+            └── 自定义地址（--mirror --mirror-url URL）
 
     代理 ──── --proxy 参数 > HTTPS_PROXY > HTTP_PROXY
 
@@ -163,10 +168,10 @@ hf_dl/
     ┌──────────┬──────────┬────────────────────────────┐
     │ 镜像源   │ 代理     │ 效果                        │
     ├──────────┼──────────┼────────────────────────────┤
+    │ 官方源   │ 无       │ 默认模式，直连官方源        │
+    │ 官方源   │ HTTP代理 │ 通过代理访问官方源          │
     │ hf-mirror│ 无       │ 国内直连镜像，无需代理      │
     │ hf-mirror│ HTTP代理 │ 镜像+代理双重加速           │
-    │ 官方源   │ HTTP代理 │ 通过代理访问官方源          │
-    │ 官方源   │ 无       │ 直连官方源（国内可能较慢）  │
     └──────────┴──────────┴────────────────────────────┘
 ```
 
@@ -198,7 +203,7 @@ python -m pytest tests/test_downloader.py -v
 
 ### 下载速度慢？
 
-1. 确认使用了镜像源（默认已启用，输出中应显示 `镜像源: https://hf-mirror.com`）
+1. 使用国内镜像加速：`--mirror`（输出中应显示 `镜像源: https://hf-mirror.com`）
 2. 增加线程数：`--threads 8`
 3. 降低分片阈值让更多文件走多线程：`--chunk-threshold 50M`
 4. 如果镜像源也不快，尝试叠加代理：`--proxy http://127.0.0.1:7890`
@@ -220,10 +225,10 @@ export HF_TOKEN=hf_xxxxx
 hf-dl download org/private-model
 ```
 
-### 如何不使用镜像？
+### 如何使用国内镜像？
 
 ```bash
-hf-dl download gpt2 --no-mirror
+hf-dl download gpt2 --mirror
 ```
 
 ## 致谢
