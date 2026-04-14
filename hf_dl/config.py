@@ -8,6 +8,9 @@ from hf_dl.utils import parse_size
 
 OFFICIAL_ENDPOINT = "https://huggingface.co"
 
+# 镜像下载失败时自动回退的备选 endpoint 列表
+FALLBACK_ENDPOINTS = [OFFICIAL_ENDPOINT]
+
 
 @dataclass
 class DownloadConfig:

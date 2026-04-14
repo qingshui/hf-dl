@@ -18,7 +18,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
-from hf_dl.config import DownloadConfig
+from hf_dl.config import DownloadConfig, OFFICIAL_ENDPOINT, FALLBACK_ENDPOINTS
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,12 @@ def download_repo(config: DownloadConfig):
 
     base_url = f"{config.endpoint}/{config.repo_id}/resolve/main"
 
+    # 构建备选 endpoint 列表（镜像下载失败时回退）
+    fallback_endpoints = []
+    if config.mirror and config.endpoint != OFFICIAL_ENDPOINT:
+        # 使用了镜像，加入官方源作为回退
+        fallback_endpoints = [OFFICIAL_ENDPOINT]
+
     # 整体进度条：追踪所有文件的下载进度
     with Progress(
         SpinnerColumn(),
@@ -328,43 +334,58 @@ def download_repo(config: DownloadConfig):
                 progress.update(overall_task, status=f"{completed}/{len(target_files)} 文件")
                 continue
 
-            url = f"{base_url}/{fname}"
+            # 依次尝试：镜像源 -> 官方源
+            endpoints_to_try = [config.endpoint] + fallback_endpoints
+            downloaded_ok = False
 
-            if config.threads > 0 and fsize > config.chunk_threshold:
-                # 大文件: 多线程分片下载
+            for endpoint in endpoints_to_try:
+                url = f"{endpoint}/{config.repo_id}/resolve/main/{fname}"
                 try:
-                    remote_size = get_file_size(url, {}, config.proxy)
-                    if remote_size <= 0:
-                        remote_size = fsize
-                    download_file_multithread(
-                        url=url,
-                        filepath=local_path,
-                        file_size=remote_size,
-                        config=config,
-                        progress=progress,
-                        parent_task_id=overall_task,
-                    )
+                    if config.threads > 0 and fsize > config.chunk_threshold:
+                        # 大文件: 多线程分片下载
+                        try:
+                            remote_size = get_file_size(url, {}, config.proxy)
+                            if remote_size <= 0:
+                                remote_size = fsize
+                            download_file_multithread(
+                                url=url,
+                                filepath=local_path,
+                                file_size=remote_size,
+                                config=config,
+                                progress=progress,
+                                parent_task_id=overall_task,
+                            )
+                        except Exception:
+                            # 多线程失败，清理残留文件，回退单线程
+                            _cleanup_failed_file(local_path)
+                            download_file_single(
+                                url=url,
+                                filepath=local_path,
+                                config=config,
+                                progress=progress,
+                                parent_task_id=overall_task,
+                            )
+                    else:
+                        # 小文件: 流式下载
+                        download_file_single(
+                            url=url,
+                            filepath=local_path,
+                            config=config,
+                            progress=progress,
+                            parent_task_id=overall_task,
+                        )
+                    downloaded_ok = True
+                    break
                 except Exception as e:
-                    logger.error(f"多线程下载 {fname} 失败: {e}, 回退到单文件下载")
-                    download_file_single(
-                        url=url,
-                        filepath=local_path,
-                        config=config,
-                        progress=progress,
-                        parent_task_id=overall_task,
-                    )
-            else:
-                # 小文件: 流式下载
-                try:
-                    download_file_single(
-                        url=url,
-                        filepath=local_path,
-                        config=config,
-                        progress=progress,
-                        parent_task_id=overall_task,
-                    )
-                except Exception as e:
-                    logger.error(f"下载 {fname} 失败: {e}")
+                    endpoint_label = "镜像源" if endpoint != OFFICIAL_ENDPOINT else "官方源"
+                    logger.warning(f"{endpoint_label}下载 {fname} 失败: {e}")
+                    _cleanup_failed_file(local_path)
+                    if fallback_endpoints:
+                        console.print(f"[yellow]{endpoint_label}下载 {fname} 失败，尝试回退...[/yellow]")
+
+            if not downloaded_ok:
+                logger.error(f"下载 {fname} 失败: 所有源均不可用")
+                console.print(f"[bold red]下载 {fname} 失败: 所有源均不可用[/bold red]")
 
             completed += 1
             progress.update(overall_task, status=f"{completed}/{len(target_files)} 文件")
@@ -374,6 +395,16 @@ def _get_console():
     """获取 rich Console 实例。"""
     from rich.console import Console
     return Console()
+
+
+def _cleanup_failed_file(filepath: str):
+    """清理下载失败的残留文件（文件本体 + progress 文件）。"""
+    for path in [filepath, filepath + ".progress"]:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def _format_size(size: int) -> str:
